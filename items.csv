@@ -1,0 +1,11 @@
+title,author,year,edition,desc,format,id,copies,avail_copies,ratings
+"The Rust Programming Language","Steve Klabnik, Carol Nichols",2019,"2nd","A comprehensive guide to Rust.","Book",1,5,3,4
+"Introduction to Algorithms","Thomas H. Cormen, Charles E. Leiserson, Ronald L. Rivest, Clifford Stein",2009,"3rd","A standard book on algorithms.","Book",2,4,2,5
+"Clean Code","Robert C. Martin",2008,"1st","A handbook of agile software craftsmanship.","Book",3,3,1,5
+"The Pragmatic Programmer","Andrew Hunt, David Thomas",1999,"1st","Tips for software development.","Book",4,2,1,5
+"Design Patterns","Erich Gamma, Richard Helm, Ralph Johnson, John Vlissides",1994,"1st","Elements of reusable object-oriented software.","Book",5,6,4,5
+"Deep Learning","Ian Goodfellow, Yoshua Bengio, Aaron Courville",2016,"1st","A textbook on deep learning.","Book",6,3,2,4
+"You Don't Know JS","Kyle Simpson",2014,"1st","A deep dive into JavaScript.","Book",7,5,4,4
+"Artificial Intelligence: A Modern Approach","Stuart Russell, Peter Norvig",2020,"4th","A comprehensive AI textbook.","Book",8,3,2,5
+"The Mythical Man-Month","Frederick P. Brooks Jr.",1975,"2nd","Essays on software engineering.","Book",9,4,3,5
+"Gödel, Escher, Bach","Douglas Hofstadter",1979,"20th Anniversary Edition","An eternal golden braid.","Book",10,2,1,5
