@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Deserialize, Serialize)]
 struct LiItem {
     title: String,
-    author: String,
+    author: Option<Box<String>>,
     year: u32,
     edition: String,
     desc: String,
@@ -373,11 +373,9 @@ fn create_member_details_page(library: Rc<RefCell<Library>>) -> GtkBox {
     
     member_box
 }
-
 fn create_catalog_page(library: Rc<RefCell<Library>>) -> GtkBox {
     let catalog_box = GtkBox::new(gtk::Orientation::Vertical, 10);
     
-    // Create a list store for catalog
     let list_store = ListStore::new(&[
         u32::static_type(),     // Item ID
         String::static_type(),  // Title
@@ -388,10 +386,8 @@ fn create_catalog_page(library: Rc<RefCell<Library>>) -> GtkBox {
         u32::static_type(),     // Available Copies
     ]);
     
-    // Create TreeView
     let tree_view = TreeView::with_model(&list_store);
-    
-    // Create columns
+
     let columns = [
         ("Item ID", 0),
         ("Title", 1),
@@ -401,7 +397,7 @@ fn create_catalog_page(library: Rc<RefCell<Library>>) -> GtkBox {
         ("Total Copies", 5),
         ("Available Copies", 6),
     ];
-    
+
     for (title, column_id) in columns.iter() {
         let renderer = CellRendererText::new();
         let column = TreeViewColumn::new();
@@ -410,40 +406,49 @@ fn create_catalog_page(library: Rc<RefCell<Library>>) -> GtkBox {
         column.add_attribute(&renderer, "text", *column_id);
         tree_view.append_column(&column);
     }
-    
-    // Refresh Button
+
     let refresh_button = Button::with_label("Refresh Catalog");
+    
+    let refresh_catalog = |list_store: &ListStore, library: &Library| {
+        list_store.clear();
+        for (_, item) in &library.items {
+            list_store.insert_with_values(None, &[
+                (0, &item.id),
+                (1, &item.title),
+                (2, &item.author.as_ref().map_or("Unknown".to_string(), |a| a.to_string())),
+                (3, &item.year),
+                (4, &item.format),
+                (5, &item.copies),
+                (6, &item.avail_copies),
+            ]);
+        }
+    };
+
+    // Populate catalog on startup
+    {
+        let lib = library.borrow();
+        refresh_catalog(&list_store, &lib);
+    }
+
     refresh_button.connect_clicked(glib::clone!(
         #[weak]
         list_store,
         #[weak]
         library,
         move |_| {
-            list_store.clear();
             let lib = library.borrow();
-            for (_, item) in lib.items.iter() {
-                list_store.insert_with_values(None, &[
-                    (0, &item.id),
-                    (1, &item.title),
-                    (2, &item.author),
-                    (3, &item.year),
-                    (4, &item.format),
-                    (5, &item.copies),
-                    (6, &item.avail_copies),
-                ]);
-            }
+            refresh_catalog(&list_store, &lib);
         }
     ));
-    
-    // Scrolled Window for TreeView
+
     let scrolled_window = ScrolledWindow::new();
+    scrolled_window.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
     scrolled_window.set_child(Some(&tree_view));
     scrolled_window.set_vexpand(true);
-    
-    // Add widgets to box
+
     catalog_box.append(&refresh_button);
     catalog_box.append(&scrolled_window);
-    
+
     catalog_box
 }
 
