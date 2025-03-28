@@ -5,7 +5,24 @@ use std::cell::RefCell;
 use std::fs::File;
 use std::collections::HashMap;
 use csv;
+use chrono::{self, DateTime, Months, Utc};
 use serde::{Deserialize, Serialize};
+
+
+#[derive(Clone)]
+struct LiItemInstance {
+    title: String,
+    id: u32,
+    renew_factor: u32,
+    due_date: DateTime<Utc>,
+    notice: bool
+}
+
+impl LiItemInstance {
+    fn renew(&mut self) {
+        self.due_date = self.due_date + Months::new(1*self.renew_factor);
+    }
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 struct LiItem {
@@ -21,13 +38,32 @@ struct LiItem {
     ratings: u32,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+impl LiItem {
+    fn create_instance(&mut self) -> LiItemInstance {
+        self.avail_copies -= 1;
+
+        let mut inst = LiItemInstance{
+            title: self.title.clone(),
+            id: self.id,
+            renew_factor: match self.format.to_lowercase().as_str() {
+                "book" => 1,
+                "movie" => 2,
+                _ => 0
+            },
+            due_date: DateTime::default(),
+            notice: false
+        };
+
+        inst.renew();
+
+        return inst;
+    }
+}
+
+#[derive(Clone)]
 struct Member {
-    fname: String,
-    lname: String,
     id: u32,
-    #[serde(default)]
-    items: Option<Box<LiItem>>,
+    items: HashMap<u32, LiItemInstance>,
 }
 
 struct Library {
@@ -72,39 +108,57 @@ impl Library {
         Ok(())
     }
     
-    fn book_issue(&mut self, title_id: u32, fname: &str, lname: &str) -> Result<(), String> {
-        if let Some(item) = self.items.get_mut(&title_id) {
-            if item.avail_copies > 0 {
-                let member_id = self.members.len() as u32 + 1;
-                let member = Member {
-                    fname: fname.to_string(),
-                    lname: lname.to_string(),
-                    id: member_id,
-                    items: Some(Box::new(item.clone())),
-                };
-
-                item.avail_copies -= 1;
-                self.members.insert(member_id, member);
-                Ok(())
+    fn book_issue(&mut self, title_id: u32, member_id_text: String) -> Result<(), String> {
+        if let Ok(member_id) = member_id_text.parse::<u32>() {
+            if let Some(member) = self.members.get_mut(&member_id) {
+                if let Some(item) = self.items.get_mut(&title_id) {
+                    if item.avail_copies > 0 {
+                        member.items.insert(title_id, item.create_instance());
+                        Ok(())
+                    } else {
+                        Err("No available copies left!".to_string())
+                    }
+                } else {
+                    Err("Invalid Item ID!".to_string())
+                }
             } else {
-                Err("No available copies left!".to_string())
+                Err("Invalid Member ID!".to_string())
             }
         } else {
-            Err("Invalid Item ID!".to_string())
+            let member_id = self.members.len() as u32 + 1;
+            if let Some(item) = self.items.get_mut(&title_id) {
+                if item.avail_copies > 0 {
+                    let mut member = Member {
+                        id: member_id,
+                        items: HashMap::new(),
+                    };
+
+                    member.items.insert(title_id, item.create_instance());
+
+                    self.members.insert(member_id, member);
+                    Ok(())
+                } else {
+                    Err("No available copies left!".to_string())
+                }
+            } else {
+                Err("Invalid Item ID!".to_string())
+            }
         }
     }
 
-    fn book_return(&mut self, member_id: u32) -> Result<LiItem, String> {
-        if let Some(member) = self.members.remove(&member_id) {
-            if let Some(book) = member.items {
-                if let Some(item) = self.items.get_mut(&book.id) {
+
+    fn book_return(&mut self, title_id: u32, member_id: u32) -> Result<&mut LiItem, String>{
+        if self.members.contains_key(&member_id) {
+            if let Some(inst) = self.members.get_mut(&member_id).unwrap().items.remove(&title_id) {
+                if let Some(item) = self.items.get_mut(&title_id) {
                     item.avail_copies += 1;
-                    Ok(*book)
+                    drop(inst);
+                    Ok(item)
                 } else {
                     Err("Book not found in library items".to_string())
                 }
             } else {
-                Err("No book checked out by this member".to_string())
+                Err("This book was not checked out by this member".to_string())
             }
         } else {
             Err("Member not found".to_string())
@@ -114,7 +168,7 @@ impl Library {
 
 fn create_library_gui() -> Application {
     let app = Application::builder()
-    .application_id("com.example.Library")
+    .application_id("com.example.rustLMS")
     .build();
     
     app.connect_activate(|app| {
@@ -184,16 +238,12 @@ fn create_issue_page(library: Rc<RefCell<Library>>) -> GtkBox {
     let issue_box = GtkBox::new(gtk::Orientation::Vertical, 10);
     
     // Item ID Entry
-    let id_label = Label::new(Some("Item ID:"));
-    let id_entry = Entry::new();
+    let item_id_label = Label::new(Some("Item ID:"));
+    let item_id_entry = Entry::new();
     
-    // First Name Entry
-    let fname_label = Label::new(Some("First Name:"));
-    let fname_entry = Entry::new();
-    
-    // Last Name Entry
-    let lname_label = Label::new(Some("Last Name:"));
-    let lname_entry = Entry::new();
+    // Member ID Entry
+    let member_id_label = Label::new(Some("Member ID:"));
+    let member_id_entry = Entry::new();
     
     // Status Label
     let status_label = Label::new(None);
@@ -202,28 +252,23 @@ fn create_issue_page(library: Rc<RefCell<Library>>) -> GtkBox {
     let issue_button = Button::with_label("Issue Book");
     issue_button.connect_clicked(glib::clone!(
         #[weak]
-        id_entry,
+        item_id_entry,
         #[weak]
-        fname_entry,
-        #[weak]
-        lname_entry,
+        member_id_entry,
         #[weak]
         status_label,
         #[weak]
         library,
         move |_| {
-            let id_text = id_entry.text().to_string();
-            let fname_text = fname_entry.text().to_string();
-            let lname_text = lname_entry.text().to_string();
-            
-            if let Ok(id) = id_text.parse::<u32>() {
+            let item_id_text = item_id_entry.text().to_string();
+            let member_id_text = member_id_entry.text().to_string();
+            if let Ok(item_id) = item_id_text.parse::<u32>() {            
                 let mut lib = library.borrow_mut();
-                match lib.book_issue(id, &fname_text, &lname_text) {
+                match lib.book_issue(item_id, member_id_text) {
                     Ok(_) => {
                         status_label.set_text("Book issued successfully!");
-                        id_entry.set_text("");
-                        fname_entry.set_text("");
-                        lname_entry.set_text("");
+                        item_id_entry.set_text("");
+                        member_id_entry.set_text("");
                     },
                     Err(e) => status_label.set_text(&format!("Error: {}", e))
                 }
@@ -234,12 +279,10 @@ fn create_issue_page(library: Rc<RefCell<Library>>) -> GtkBox {
     ));
     
     // Add widgets to box
-    issue_box.append(&id_label);
-    issue_box.append(&id_entry);
-    issue_box.append(&fname_label);
-    issue_box.append(&fname_entry);
-    issue_box.append(&lname_label);
-    issue_box.append(&lname_entry);
+    issue_box.append(&item_id_label);
+    issue_box.append(&item_id_entry);
+    issue_box.append(&member_id_label);
+    issue_box.append(&member_id_entry);
     issue_box.append(&issue_button);
     issue_box.append(&status_label);
     
@@ -250,8 +293,11 @@ fn create_return_page(library: Rc<RefCell<Library>>) -> GtkBox {
     let return_box = GtkBox::new(gtk::Orientation::Vertical, 10);
     
     // Member ID Entry
-    let id_label = Label::new(Some("Member ID:"));
-    let id_entry = Entry::new();
+    let item_id_label = Label::new(Some("Item ID:"));
+    let item_id_entry = Entry::new();
+
+    let member_id_label = Label::new(Some("Member ID:"));
+    let member_id_entry = Entry::new();
     
     // Status Label
     let status_label = Label::new(None);
@@ -263,7 +309,9 @@ fn create_return_page(library: Rc<RefCell<Library>>) -> GtkBox {
     let return_button = Button::with_label("Return Book");
     return_button.connect_clicked(glib::clone!(
         #[weak]
-        id_entry,
+        item_id_entry,
+        #[weak]
+        member_id_entry,
         #[weak]
         status_label,
         #[weak]
@@ -271,34 +319,44 @@ fn create_return_page(library: Rc<RefCell<Library>>) -> GtkBox {
         #[weak]
         library,
         move |_| {
-            let id_text = id_entry.text().to_string();
+            let item_id_text = item_id_entry.text().to_string();
+            let member_id_text = member_id_entry.text().to_string();
             
-            if let Ok(id) = id_text.parse::<u32>() {
-                let mut lib = library.borrow_mut();
-                match lib.book_return(id) {
-                    Ok(book) => {
-                        status_label.set_text("Book returned successfully!");
-                        book_details_label.set_text(&format!(
-                            "Returned Book: {} (ID: {})", 
-                            book.title, 
-                            book.id
-                        ));
-                        id_entry.set_text("");
-                    },
-                    Err(e) => {
-                        status_label.set_text(&format!("Error: {}", e));
-                        book_details_label.set_text("");
+            if let Ok(item_id) = item_id_text.parse::<u32>() {
+                if let Ok(member_id) = member_id_text.parse::<u32>() {
+                    let mut lib = library.borrow_mut();
+                    match lib.book_return(item_id, member_id) {
+                        Ok(book) => {
+                            status_label.set_text("Book returned successfully!");
+                            book_details_label.set_text(&format!(
+                                "Returned Book: {} (ID: {})", 
+                                book.title,
+                                book.id
+                            ));
+
+
+                            item_id_entry.set_text("");
+                            member_id_entry.set_text("")
+                        },
+                        Err(e) => {
+                            status_label.set_text(&format!("Error: {}", e));
+                            book_details_label.set_text("");
+                        }
                     }
+                } else {
+
                 }
             } else {
-                status_label.set_text("Invalid Member ID");
+                status_label.set_text("Invalid Item ID");
             }
         }
     ));
     
     // Add widgets to box
-    return_box.append(&id_label);
-    return_box.append(&id_entry);
+    return_box.append(&item_id_label);
+    return_box.append(&item_id_entry);
+    return_box.append(&member_id_label);
+    return_box.append(&member_id_entry);
     return_box.append(&return_button);
     return_box.append(&status_label);
     return_box.append(&book_details_label);
@@ -311,8 +369,6 @@ fn create_member_details_page(library: Rc<RefCell<Library>>) -> GtkBox {
     
     // Create a list store for members
     let list_store = ListStore::new(&[
-        String::static_type(),  // First Name
-        String::static_type(),  // Last Name
         u32::static_type(),     // Member ID
         String::static_type(),  // Book Title
     ]);
@@ -322,10 +378,8 @@ fn create_member_details_page(library: Rc<RefCell<Library>>) -> GtkBox {
     
     // Create columns
     let columns = [
-        ("First Name", 0),
-        ("Last Name", 1),
-        ("Member ID", 2),
-        ("Book Title", 3),
+        ("Member ID", 0),
+        ("Item Titles", 1),
     ];
     
     for (title, column_id) in columns.iter() {
@@ -348,15 +402,13 @@ fn create_member_details_page(library: Rc<RefCell<Library>>) -> GtkBox {
             list_store.clear();
             let lib = library.borrow();
             for member in lib.members.values() {
-                let book_title = member.items.as_ref()
-                    .map(|b| b.title.clone())
-                    .unwrap_or_else(|| "No Book".to_string());
-                
+                let mut titles = String::new();
+                for inst in member.items.values() {
+                    titles += &(inst.title.as_str().to_owned() + " (" + &inst.id.to_string() +  "),  ");
+                }
                 list_store.insert_with_values(None, &[
-                    (0, &member.fname),
-                    (1, &member.lname),
-                    (2, &member.id),
-                    (3, &book_title),
+                    (0, &member.id),
+                    (1, &titles),
                 ]);
             }
         }
@@ -384,6 +436,7 @@ fn create_catalog_page(library: Rc<RefCell<Library>>) -> GtkBox {
         String::static_type(),  // Format
         u32::static_type(),     // Total Copies
         u32::static_type(),     // Available Copies
+        u32::static_type(),     // Ratings
     ]);
     
     let tree_view = TreeView::with_model(&list_store);
@@ -396,6 +449,7 @@ fn create_catalog_page(library: Rc<RefCell<Library>>) -> GtkBox {
         ("Format", 4),
         ("Total Copies", 5),
         ("Available Copies", 6),
+        ("Ratings", 7)
     ];
 
     for (title, column_id) in columns.iter() {
@@ -420,6 +474,7 @@ fn create_catalog_page(library: Rc<RefCell<Library>>) -> GtkBox {
                 (4, &item.format),
                 (5, &item.copies),
                 (6, &item.avail_copies),
+                (7, &item.ratings),
             ]);
         }
     };
@@ -433,7 +488,7 @@ fn create_catalog_page(library: Rc<RefCell<Library>>) -> GtkBox {
     refresh_button.connect_clicked(glib::clone!(
         #[weak]
         list_store,
-        #[weak]
+        #[strong]
         library,
         move |_| {
             let lib = library.borrow();

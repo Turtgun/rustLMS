@@ -8,3 +8,4 @@ csv = "1.3.1"
 serde = { version = "1.0.219", features = ["derive"] }
 gtk = { version = "0.9.6", package = "gtk4" }
 glib = "0.20.9"
+chrono = "0.4.40"
