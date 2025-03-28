@@ -1,9 +1,13 @@
+use glib::clone::Downgrade;
+use glib::property::PropertyGet;
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, Box as GtkBox, Button, Entry, Label, ListStore, ScrolledWindow, TreeView, TreeViewColumn, CellRendererText};
+use std::ops::Deref;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::fs::File;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use csv;
 use chrono::{self, DateTime, Months, Utc};
 use serde::{Deserialize, Serialize};
@@ -74,8 +78,8 @@ struct Library {
 impl Library {
     fn new() -> Library {
         Library {
-            items: HashMap::new(),
-            members: HashMap::new(),
+            items: HashMap::with_capacity(3000000),
+            members: HashMap::with_capacity(10),
         }
     }
 
@@ -168,31 +172,27 @@ impl Library {
 
 fn create_library_gui() -> Application {
     let app = Application::builder()
-    .application_id("com.example.rustLMS")
-    .build();
-    
+        .application_id("com.example.rustLMS")
+        .build();
+
     app.connect_activate(|app| {
-        // Create a shared library state
-        let library = Rc::new(RefCell::new(Library::new()));
-        
-        // Try to initialize library from CSV
+        // Shared library state
+        let library = Arc::new(RwLock::new(Library::new()));
+
+        // Initialize library
         {
-            let mut lib = library.borrow_mut();
-            // Option 1: Add current directory path
-            match lib.initialize_lib("items.csv") {
+            let mut lib = library.write().unwrap();
+            match lib.initialize_lib("output.csv") {
                 Ok(_) => println!("Library initialized successfully"),
                 Err(e) => {
                     eprintln!("Failed to initialize library: {}", e);
-                    // Option 2: Print current working directory
-                    match std::env::current_dir() {
-                        Ok(path) => println!("Current working directory: {}", path.display()),
-                        Err(_) => println!("Could not determine current directory"),
+                    if let Ok(path) = std::env::current_dir() {
+                        println!("Current working directory: {}", path.display());
                     }
                 }
             }
         }
 
-        // Main Window
         let window = ApplicationWindow::builder()
             .application(app)
             .title("Library Management System")
@@ -200,31 +200,31 @@ fn create_library_gui() -> Application {
             .default_height(600)
             .build();
 
-        // Main vertical box
         let main_box = GtkBox::new(gtk::Orientation::Vertical, 10);
         main_box.set_margin_top(10);
         main_box.set_margin_bottom(10);
         main_box.set_margin_start(10);
         main_box.set_margin_end(10);
 
-        // Notebook for different sections
         let notebook = gtk::Notebook::new();
 
-        // Book Issuance Page
-        let issue_box = create_issue_page(Rc::clone(&library));
-        notebook.append_page(&issue_box, Some(&Label::new(Some("Issue Books"))));
-
-        // Book Return Page
-        let return_box = create_return_page(Rc::clone(&library));
-        notebook.append_page(&return_box, Some(&Label::new(Some("Return Books"))));
-
-        // Member Details Page
-        let member_box = create_member_details_page(Rc::clone(&library));
-        notebook.append_page(&member_box, Some(&Label::new(Some("Member Details"))));
-
-        // Library Catalog Page
-        let catalog_box = create_catalog_page(Rc::clone(&library));
-        notebook.append_page(&catalog_box, Some(&Label::new(Some("Library Catalog"))));
+        // Pass the Arc<RwLock<Library>> to each page
+        notebook.append_page(
+            &create_issue_page(library.clone()),
+            Some(&Label::new(Some("Issue Books"))),
+        );
+        notebook.append_page(
+            &create_return_page(library.clone()),
+            Some(&Label::new(Some("Return Books"))),
+        );
+        notebook.append_page(
+            &create_member_details_page(library.clone()),
+            Some(&Label::new(Some("Member Details"))),
+        );
+        notebook.append_page(
+            &create_catalog_page(library.clone()),
+            Some(&Label::new(Some("Library Catalog"))),
+        );
 
         main_box.append(&notebook);
         window.set_child(Some(&main_box));
@@ -233,126 +233,98 @@ fn create_library_gui() -> Application {
 
     app
 }
-
-fn create_issue_page(library: Rc<RefCell<Library>>) -> GtkBox {
+fn create_issue_page(library: Arc<RwLock<Library>>) -> GtkBox {
     let issue_box = GtkBox::new(gtk::Orientation::Vertical, 10);
-    
-    // Item ID Entry
+
     let item_id_label = Label::new(Some("Item ID:"));
     let item_id_entry = Entry::new();
-    
-    // Member ID Entry
     let member_id_label = Label::new(Some("Member ID:"));
     let member_id_entry = Entry::new();
-    
-    // Status Label
     let status_label = Label::new(None);
-    
-    // Issue Button
+
     let issue_button = Button::with_label("Issue Book");
     issue_button.connect_clicked(glib::clone!(
-        #[weak]
-        item_id_entry,
-        #[weak]
-        member_id_entry,
-        #[weak]
-        status_label,
-        #[weak]
-        library,
+        #[weak] item_id_entry,
+        #[weak] member_id_entry,
+        #[weak] status_label,
+        #[strong] library,  // Keep the Arc alive
         move |_| {
             let item_id_text = item_id_entry.text().to_string();
             let member_id_text = member_id_entry.text().to_string();
-            if let Ok(item_id) = item_id_text.parse::<u32>() {            
-                let mut lib = library.borrow_mut();
+            if let Ok(item_id) = item_id_text.parse::<u32>() {
+                let mut lib = library.write().unwrap(); // Lock for writing here
                 match lib.book_issue(item_id, member_id_text) {
                     Ok(_) => {
                         status_label.set_text("Book issued successfully!");
                         item_id_entry.set_text("");
                         member_id_entry.set_text("");
-                    },
-                    Err(e) => status_label.set_text(&format!("Error: {}", e))
+                    }
+                    Err(e) => status_label.set_text(&format!("Error: {}", e)),
                 }
             } else {
                 status_label.set_text("Invalid Item ID");
             }
         }
     ));
-    
-    // Add widgets to box
+
     issue_box.append(&item_id_label);
     issue_box.append(&item_id_entry);
     issue_box.append(&member_id_label);
     issue_box.append(&member_id_entry);
     issue_box.append(&issue_button);
     issue_box.append(&status_label);
-    
+
     issue_box
 }
 
-fn create_return_page(library: Rc<RefCell<Library>>) -> GtkBox {
+fn create_return_page(library: Arc<RwLock<Library>>) -> GtkBox {
     let return_box = GtkBox::new(gtk::Orientation::Vertical, 10);
-    
-    // Member ID Entry
+
     let item_id_label = Label::new(Some("Item ID:"));
     let item_id_entry = Entry::new();
-
     let member_id_label = Label::new(Some("Member ID:"));
     let member_id_entry = Entry::new();
-    
-    // Status Label
     let status_label = Label::new(None);
-    
-    // Returned Book Details Label
     let book_details_label = Label::new(None);
-    
-    // Return Button
+
     let return_button = Button::with_label("Return Book");
     return_button.connect_clicked(glib::clone!(
-        #[weak]
-        item_id_entry,
-        #[weak]
-        member_id_entry,
-        #[weak]
-        status_label,
-        #[weak]
-        book_details_label,
-        #[weak]
-        library,
+        #[weak] item_id_entry,
+        #[weak] member_id_entry,
+        #[weak] status_label,
+        #[weak] book_details_label,
+        #[strong] library,
         move |_| {
             let item_id_text = item_id_entry.text().to_string();
             let member_id_text = member_id_entry.text().to_string();
-            
+
             if let Ok(item_id) = item_id_text.parse::<u32>() {
                 if let Ok(member_id) = member_id_text.parse::<u32>() {
-                    let mut lib = library.borrow_mut();
+                    let mut lib = library.write().unwrap(); // Lock for writing
                     match lib.book_return(item_id, member_id) {
                         Ok(book) => {
                             status_label.set_text("Book returned successfully!");
                             book_details_label.set_text(&format!(
-                                "Returned Book: {} (ID: {})", 
-                                book.title,
-                                book.id
+                                "Returned Book: {} (ID: {})",
+                                book.title, book.id
                             ));
-
-
                             item_id_entry.set_text("");
-                            member_id_entry.set_text("")
-                        },
+                            member_id_entry.set_text("");
+                        }
                         Err(e) => {
                             status_label.set_text(&format!("Error: {}", e));
                             book_details_label.set_text("");
                         }
                     }
                 } else {
-
+                    status_label.set_text("Invalid Member ID");
                 }
             } else {
                 status_label.set_text("Invalid Item ID");
             }
         }
     ));
-    
-    // Add widgets to box
+
     return_box.append(&item_id_label);
     return_box.append(&item_id_entry);
     return_box.append(&member_id_label);
@@ -360,11 +332,11 @@ fn create_return_page(library: Rc<RefCell<Library>>) -> GtkBox {
     return_box.append(&return_button);
     return_box.append(&status_label);
     return_box.append(&book_details_label);
-    
+
     return_box
 }
 
-fn create_member_details_page(library: Rc<RefCell<Library>>) -> GtkBox {
+fn create_member_details_page(library: Arc<RwLock<Library>>) -> GtkBox {
     let member_box = GtkBox::new(gtk::Orientation::Vertical, 10);
     
     // Create a list store for members
@@ -375,7 +347,6 @@ fn create_member_details_page(library: Rc<RefCell<Library>>) -> GtkBox {
     
     // Create TreeView
     let tree_view = TreeView::with_model(&list_store);
-    
     // Create columns
     let columns = [
         ("Member ID", 0),
@@ -400,8 +371,7 @@ fn create_member_details_page(library: Rc<RefCell<Library>>) -> GtkBox {
         library,
         move |_| {
             list_store.clear();
-            let lib = library.borrow();
-            for member in lib.members.values() {
+            for member in library.read().unwrap().members.values() {
                 let mut titles = String::new();
                 for inst in member.items.values() {
                     titles += &(inst.title.as_str().to_owned() + " (" + &inst.id.to_string() +  "),  ");
@@ -425,7 +395,7 @@ fn create_member_details_page(library: Rc<RefCell<Library>>) -> GtkBox {
     
     member_box
 }
-fn create_catalog_page(library: Rc<RefCell<Library>>) -> GtkBox {
+fn create_catalog_page(library: Arc<RwLock<Library>>) -> GtkBox {
     let catalog_box = GtkBox::new(gtk::Orientation::Vertical, 10);
     
     let list_store = ListStore::new(&[
@@ -481,9 +451,9 @@ fn create_catalog_page(library: Rc<RefCell<Library>>) -> GtkBox {
 
     // Populate catalog on startup
     {
-        let lib = library.borrow();
-        refresh_catalog(&list_store, &lib);
+        refresh_catalog(&list_store, &library.read().unwrap());
     }
+
 
     refresh_button.connect_clicked(glib::clone!(
         #[weak]
@@ -491,8 +461,7 @@ fn create_catalog_page(library: Rc<RefCell<Library>>) -> GtkBox {
         #[strong]
         library,
         move |_| {
-            let lib = library.borrow();
-            refresh_catalog(&list_store, &lib);
+            refresh_catalog(&list_store, &library.read().unwrap());
         }
     ));
 
